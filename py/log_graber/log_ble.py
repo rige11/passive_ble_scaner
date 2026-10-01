@@ -3,22 +3,26 @@ import serial.tools.list_ports
 import time
 import sys
 import re
+from pathlib import Path
 
 # Фиксированные идентификаторы Espressif USB-JTAG/Serial для ESP32-C3 / S3
 ESP32_VID = 0x303A
 ESP32_PID = 0x1001
 BAUD_RATE = 115200
-OUTPUT_FILE = 'esp32_ble_log.txt'
+
+# ОПРЕДЕЛЯЕМ ПУТЬ: Поднимаемся на 2 каталога выше от папки скрипта
+# Например, если скрипт в .../project/tools/script.py, то .parent.parent вернет .../project/
+SCRIPT_DIR = Path(__file__).resolve().parent
+OUTPUT_FILE = SCRIPT_DIR.parent.parent / 'esp32_ble_log.txt'
 
 # Структуры для сбора статистики и логов
-unique_devices = set()  # Хранит все уникальные MAC-адреса
-type_0_devices = set()  # Хранит MAC-адреса с TYPE: 0 (Public)
-type_1_devices = set()  # Хранит MAC-адреса с TYPE: 1 (Random)
-all_log_lines = []  # Временный буфер для строк лога
+unique_devices = set()
+type_0_devices = set()
+type_1_devices = set()
+all_log_lines = []
 
 
 def find_esp32_port():
-    """Автоматический поиск COM-порта платы ESP32-C3 по VID/PID."""
     ports = serial.tools.list_ports.comports()
     for port in ports:
         if port.vid == ESP32_VID and port.pid == ESP32_PID:
@@ -27,7 +31,6 @@ def find_esp32_port():
 
 
 def parse_line_for_stats(line):
-    """Парсит строку лога и собирает статистику по уникальным устройствам."""
     match = re.search(r"ADDR:\s*([0-9a-fA-F:]+)\s*\|\s*TYPE:\s*(\d)", line)
     if match:
         mac = match.group(1).lower()
@@ -46,7 +49,6 @@ def parse_line_for_stats(line):
 
 
 def generate_report_string():
-    """Генерирует текстовую строку с итоговым отчетом."""
     report = "=" * 50 + "\n"
     report += "📊 ИТОГОВАЯ СТАТИСТИКА BLE СКАНИРОВАНИЯ (10 МИНУТ)\n"
     report += "=" * 50 + "\n"
@@ -63,17 +65,16 @@ def generate_report_string():
 
 
 def save_all_to_file():
-    """Записывает статистику в начало файла, а затем добавляет весь лог."""
-    print(f"\n[ФАЙЛ] Формируем финальный отчет в '{OUTPUT_FILE}'...")
+    print(f"\n[ФАЙЛ] Сохраняем отчет на два уровня выше: '{OUTPUT_FILE}'...")
     try:
-        with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
-            # 1. Пишем сгенерированную статистику в самое начало
-            f.write(generate_report_string())
+        # Убеждаемся, что целевая папка существует
+        OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-            # 2. Дописываем все накопленные строки лога ниже
+        with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
+            f.write(generate_report_string())
             f.write("=== ПОЛНЫЙ СЫРОЙ ЛОГ СКАНИРОВАНИЯ ===\n")
             f.writelines(all_log_lines)
-        print("[УСПЕХ] Файл успешно обновлен! Статистика добавлена в начало.")
+        print("[УСПЕХ] Файл успешно сохранен по новому пути!")
     except Exception as e:
         print(f"[ОШИБКА] Не удалось сохранить файл: {e}")
 
@@ -86,55 +87,39 @@ def main():
 
     if not esp_port:
         print("[ОШИБКА] Плата ESP32-C3 не найдена!")
-        print("Проверьте USB-кабель и убедитесь, что Монитор порта в Arduino IDE ЗАКРЫТ.")
         sys.exit(1)
 
     print(f"[УСПЕХ] Обнаружена плата на порту: {esp_port}")
-    print("Логи выводятся на экран в реальном времени.")
-    print("Скрипт завершится автоматически через 10 минут, отчет будет записан в НАЧАЛО файла.\n")
-    print("Ждем запуска платы...\n")
+    print(f"Целевой файл для отчета: {OUTPUT_FILE}\n")
 
     try:
         ser = serial.Serial(esp_port, BAUD_RATE, timeout=1)
-
-        # Аппаратный авто-сброс платы при старте скрипта
         ser.setDTR(False)
         ser.setRTS(False)
         time.sleep(0.1)
         ser.setDTR(True)
         ser.setRTS(True)
-
         ser.reset_input_buffer()
 
         while True:
             if ser.in_waiting > 0:
                 line = ser.readline().decode('utf-8', errors='ignore')
-
-                # Мгновенный вывод в консоль ПК
                 print(line, end='', flush=True)
-
-                # Сохраняем строку во временный буфер памяти
                 all_log_lines.append(line)
 
-                # Парсим строку для накопления статистики
                 is_new_device = parse_line_for_stats(line)
-
                 if is_new_device:
-                    sys.stdout.write(
-                        f"\r[ПРОГРЕСС] Уникальных устройств в базе: {len(unique_devices)} | Ожидайте окончания...\n")
+                    sys.stdout.write(f"\r[ПРОГРЕСС] Уникальных устройств в базе: {len(unique_devices)}\n")
                     sys.stdout.flush()
 
-                # Проверяем маркер завершения сканирования
                 if "[SYSTEM] 10 minutes elapsed" in line or "Scan finished" in line:
                     time.sleep(1)
-                    # Выводим статистику в консоль
                     print(generate_report_string())
-                    # Перезаписываем файл: статистика встанет НАВЕРХ
                     save_all_to_file()
                     break
 
     except KeyboardInterrupt:
-        print("\n[ИНФО] Запись принудительно прервана пользователем.")
+        print("\n[ИНФО] Запись прервана пользователем.")
         print(generate_report_string())
         save_all_to_file()
     except Exception as e:
